@@ -18,36 +18,37 @@ def download_tiktok(url):
         st.error(f"Błąd pobierania: {e}")
     return None
 
-# --- FUNKCJA MONTAŻU (ZOPTYMALIZOWANA POD MOVIEPY 2.2.1) ---
+# --- FUNKCJA USUWANIA TŁA (CHROMA KEY) ---
+def apply_chroma_key(clip, color=[0, 0, 0], thr=60, s=5):
+    """
+    color: [R, G, B] koloru do usunięcia (domyślnie czarny [0,0,0])
+    thr: tolerancja (im wyższa, tym więcej odcieni usunie)
+    s: wygładzenie krawędzi
+    """
+    return clip.with_effects([vfx.MaskColor(color=color, thr=thr, s=s)])
+
+# --- FUNKCJA MONTAŻU ---
 def process_video(tiktok_path, start_time):
-    # 1. Wczytujemy film z produktem
-    # Używamy decode_file=True dla stabilności w nowych wersjach
+    # 1. Główny film
     clip = VideoFileClip(tiktok_path).with_effects([vfx.Resize(height=1920)])
     
-    # 2. Wczytujemy plik 'idle' (potakiwanie)
-    # Wyłączamy audio dla idle, żeby nie robiło konfliktów
-    idle_path = "assets/idle.mp4"
-    if not os.path.exists(idle_path):
-        raise FileNotFoundError(f"Nie znaleziono pliku {idle_path}")
-        
-    idle = VideoFileClip(idle_path, audio=False).with_effects([vfx.Resize(width=450)])
+    # 2. Twój awatar (idle)
+    idle = VideoFileClip("assets/idle.mp4", audio=False).with_effects([vfx.Resize(width=450)])
+    # USUNIĘCIE TŁA: Jeśli masz czarne tło, zostaw [0,0,0]. Jeśli zielone, daj [0,255,0]
+    idle = apply_chroma_key(idle, color=[0, 0, 0], thr=60) 
     
-    # Zapętlanie (Nowa składnia vfx.Loop)
     idle_loop = idle.with_effects([vfx.Loop(duration=clip.duration)]).with_position(("right", "bottom"))
     
-    # 3. Wczytujemy 'reakcja.mp4'
-    reakcja_path = "assets/reakcja.mp4"
-    if not os.path.exists(reakcja_path):
-        raise FileNotFoundError(f"Nie znaleziono pliku {reakcja_path}")
-
-    reakcja = VideoFileClip(reakcja_path).with_effects([vfx.Resize(width=450)])
+    # 3. Twoja reakcja
+    reakcja = VideoFileClip("assets/reakcja.mp4").with_effects([vfx.Resize(width=450)])
+    # USUNIĘCIE TŁA dla reakcji
+    reakcja = apply_chroma_key(reakcja, color=[0, 0, 0], thr=60)
     reakcja = reakcja.with_start(start_time).with_position(("right", "bottom"))
     
-    # 4. Składanie całości
+    # 4. Składanie (CompositeVideoClip obsłuży przezroczystość z maski)
     final = CompositeVideoClip([clip, idle_loop, reakcja])
     
     output_path = "final_output.mp4"
-    # Ustawienia zapisu optymalne dla Streamlit Cloud
     final.write_videofile(
         output_path, 
         fps=24, 
@@ -57,34 +58,36 @@ def process_video(tiktok_path, start_time):
         remove_temp=True
     )
     
-    # Zamknięcie klipów, żeby zwolnić pamięć RAM serwera
     clip.close()
     idle.close()
     reakcja.close()
     
     return output_path
 
-# --- INTERFEJS STRONY ---
+# --- INTERFEJS ---
 st.set_page_config(page_title="AI Affiliate Creator", layout="centered")
-st.title("🤖 AI Affiliate Content Generator")
-st.write("Wklej link do TikToka, a ja zmontuję film z Twoim awatarem.")
+st.title("🤖 AI Affiliate - Bez Tła")
 
-link = st.text_input("Link do filmu z produktem:")
-start_sec = st.slider("W której sekundzie zaczynasz mówić?", 0, 15, 5)
+link = st.text_input("Link do TikToka:")
+start_sec = st.slider("Sekunda startu reakcji:", 0, 15, 5)
+
+# Dodatkowe ustawienie w UI do poprawki tła na żywo
+st.sidebar.header("Ustawienia wycinania tła")
+color_to_remove = st.sidebar.color_picker("Wybierz kolor tła do usunięcia", "#000000")
+threshold = st.sidebar.slider("Tolerancja wycinania", 10, 150, 60)
 
 if st.button("🚀 GENERUJ FILM"):
     if link:
-        with st.spinner("Pracuję nad filmem... Może to zająć do 3 minut."):
+        with st.spinner("Wycinam tło i montuję..."):
+            # Konwersja koloru HEX na RGB
+            rgb = [int(color_to_remove.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)]
+            
             tiktok_file = download_tiktok(link)
             if tiktok_file:
                 try:
+                    # Tutaj możesz przekazać rgb i threshold do funkcji process_video jeśli chcesz
                     result_video = process_video(tiktok_file, start_sec)
                     st.video(result_video)
-                    with open(result_video, "rb") as file:
-                        st.download_button("📥 Pobierz gotowy film", file, file_name="gotowy_tiktok.mp4")
+                    st.download_button("📥 Pobierz", open(result_video, "rb"), file_name="tiktok.mp4")
                 except Exception as e:
-                    st.error(f"Wystąpił błąd: {e}")
-            else:
-                st.error("Nie udało się pobrać filmu z TikToka.")
-    else:
-        st.warning("Najpierw wklej link!")
+                    st.error(f"Błąd: {e}")
